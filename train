@@ -1,0 +1,68 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Input, Dense, Flatten, Reshape
+import matplotlib.pyplot as plt
+
+# === 1. Загрузка и подготовка нового датасета ======================
+data = pd.read_csv("gg.csv")  # путь к твоему CSV
+# Убедимся, что названия колонок соответствуют
+data.columns = ["time", "roll", "pitch", "throttle", "d_x", "d_y", "d_z"]
+
+# Каждое состояние — это смещение, каждый target — управление
+trajectory = []
+for _, row in data.iterrows():
+    state = (row["d_x"], row["d_y"], row["d_z"])
+    control = (row["roll"], row["pitch"], row["throttle"], row["time"])
+    trajectory.append((state, control))
+
+# === 2. Формирование обучающих пар (последовательности) ===========
+def make_sequences(traj, length=1):
+    X, Y = [], []
+    for i in range(len(traj) - length):
+        xs = [traj[j][0] for j in range(i, i + length)]
+        ys = [traj[j][1] for j in range(i, i + length)]
+        X.append(xs)
+        Y.append(ys)
+    return np.array(X, dtype=np.float32), np.array(Y, dtype=np.float32)
+
+SEQ_LEN = 1  # У тебя независимые строки, можно использовать SEQ_LEN=1
+X_train, Y_train = make_sequences(trajectory, SEQ_LEN)
+
+# === 3. Модель без ограничения выходов =============================
+model = Sequential([
+    Input(shape=(SEQ_LEN, 3)),  # вход: d_x, d_y, d_z
+    Flatten(),
+    Dense(128, activation="relu"),
+    Dense(64,  activation="relu"),
+    Dense(SEQ_LEN * 4),  # выход: roll, pitch, throttle
+    Reshape((SEQ_LEN, 4)),
+])
+
+model.compile(optimizer="adam", loss="mse")
+history = model.fit(X_train, Y_train, epochs=300, batch_size=32)
+
+# === 4. Сохранение модели и конвертация в TFLite ===================
+model.save('C:/gen_final/', save_format='tf')
+
+converter = tf.lite.TFLiteConverter.from_saved_model('C:/gen_final')
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+tflite_model = converter.convert()
+
+with open('C:/gen_final/drone_dense.tflite', 'wb') as f:
+    f.write(tflite_model)
+
+# === 5. График потерь ==============================================
+plt.figure()
+plt.plot(history.history['loss'])
+plt.title('MSE Loss (no constraints)')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.grid(True)
+plt.savefig('C:/gen_final/loss_plot_dense_no_bounds.png', dpi=150)
+
+# === 6. Проверка предсказания ======================================
+test_X = np.expand_dims(X_train[0], axis=0)
+pred = model.predict(test_X, verbose=0)
+print('Predicted (roll, pitch, throttle, time):\n', pred)
